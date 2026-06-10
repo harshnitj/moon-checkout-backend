@@ -5,8 +5,11 @@ const {
 } = require('./repositories/checkoutSettings')
 const { normalizeCodChargeRules, serializeCodChargeRules } = require('./codCharges')
 
+const CHECKOUT_VARIANTS = ['single-page', 'three-step']
+
 const DEFAULT_SETTINGS = {
   checkoutEnabled: true,
+  checkoutVariant: 'single-page',
   codEnabled: true,
   onlineEnabled: true,
   advanceEnabled: true,
@@ -64,6 +67,9 @@ async function getSettingsForShop(shop) {
 function serializeSettings(settings) {
   return {
     checkoutEnabled: settings.checkoutEnabled,
+    checkoutVariant: CHECKOUT_VARIANTS.includes(settings.checkoutVariant)
+      ? settings.checkoutVariant
+      : 'single-page',
     codEnabled: settings.codEnabled,
     onlineEnabled: settings.onlineEnabled,
     advanceEnabled: settings.advanceEnabled,
@@ -108,6 +114,10 @@ function pickSettingsUpdate(body) {
   for (const field of SETTINGS_FIELDS) {
     if (field === 'codChargeRules') continue
     if (body[field] === undefined) continue
+    if (field === 'checkoutVariant') {
+      update[field] = CHECKOUT_VARIANTS.includes(body[field]) ? body[field] : 'single-page'
+      continue
+    }
     update[field] = body[field]
   }
   if (body.codChargeRules !== undefined) {
