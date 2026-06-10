@@ -1,4 +1,4 @@
-const { STAGE_RANK } = require('./repositories/checkoutSessions')
+const { STAGE_RANK, resolvePeakStage } = require('./repositories/checkoutSessions')
 
 const EVENT_TO_STAGE = {
   session_started: 'started',
@@ -20,11 +20,26 @@ function formatIndianPhone(phone) {
 
 function normalizeDelivery(delivery = {}) {
   if (!delivery || typeof delivery !== 'object') return null
-  const pincode = String(delivery.pincode || delivery.zip || '').replace(/\D/g, '').slice(0, 6)
-  const city = String(delivery.city || '').trim()
-  const state = String(delivery.state || delivery.province || '').trim()
-  if (!pincode && !city && !state) return null
-  return { pincode: pincode || null, city: city || null, state: state || null }
+  const normalized = {
+    name: String(delivery.name || '').trim() || null,
+    houseNumber: String(delivery.houseNumber || '').trim() || null,
+    street: String(delivery.street || delivery.address1 || '').trim() || null,
+    landmark: String(delivery.landmark || delivery.address2 || '').trim() || null,
+    pincode: String(delivery.pincode || delivery.zip || '').replace(/\D/g, '').slice(0, 6) || null,
+    city: String(delivery.city || '').trim() || null,
+    state: String(delivery.state || delivery.province || '').trim() || null,
+  }
+  return Object.values(normalized).some(Boolean) ? normalized : null
+}
+
+function mergeDelivery(existing = null, incoming = null) {
+  if (!incoming) return existing || null
+  if (!existing) return incoming
+  const merged = { ...existing }
+  Object.entries(incoming).forEach(([key, value]) => {
+    if (value) merged[key] = value
+  })
+  return Object.values(merged).some(Boolean) ? merged : null
 }
 
 function buildSessionPatch(body = {}) {
@@ -99,7 +114,8 @@ function buildFunnelSummary(counts) {
 const { serializeCartSnapshot } = require('./cartSnapshot')
 
 function serializeDropOffLead(session) {
-  const stage = session.funnelStage || 'started'
+  const peakStage = resolvePeakStage(session)
+  const isAbandoned = !!(session.abandonedAt || session.funnelStage === 'abandoned')
   const cartSnapshot = serializeCartSnapshot(session.cartSnapshot)
   return {
     id: session.id,
@@ -112,13 +128,15 @@ function serializeDropOffLead(session) {
     itemCount: cartSnapshot?.itemCount || 0,
     checkoutVariant: session.checkoutVariant,
     lastStep: session.lastStep || 1,
-    funnelStage: stage,
+    funnelStage: isAbandoned ? 'abandoned' : peakStage,
+    peakFunnelStage: peakStage,
+    paymentReached: !!session.paymentReached,
     paymentMethodSelected: session.paymentMethodSelected,
     delivery: session.delivery,
     lastActivityAt: session.lastActivityAt,
     createdAt: session.createdAt,
     abandonedAt: session.abandonedAt,
-    retargetingReady: !!session.customerPhone && stage !== 'completed',
+    retargetingReady: !!session.customerPhone && peakStage !== 'completed',
   }
 }
 
@@ -138,6 +156,8 @@ function stageLabel(stage) {
 module.exports = {
   EVENT_TO_STAGE,
   formatIndianPhone,
+  normalizeDelivery,
+  mergeDelivery,
   buildSessionPatch,
   parseRangeDays,
   getRangeStart,

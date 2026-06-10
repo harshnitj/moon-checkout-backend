@@ -151,32 +151,22 @@ router.get('/funnel', dashboardAuth, async (req, res) => {
   const where = { merchantId }
   if (since) where.createdAt = { gte: since }
 
+  const dropOffWhere = {
+    ...where,
+    dropOff: true,
+    ...(search ? { search } : {}),
+  }
+
   const [counts, dropOffTotal, dropOffItems] = await Promise.all([
     aggregateFunnelCounts(merchantId, since),
-    countSessions({ ...where, dropOff: true }),
+    countSessions(dropOffWhere),
     findSessions({
-      where: { ...where, dropOff: true },
+      where: dropOffWhere,
       orderBy: { lastActivityAt: 'desc' },
       skip,
       take: limit,
     }),
   ])
-
-  const filteredDropOffs = search
-    ? dropOffItems.filter((session) => {
-        const haystack = [
-          session.customerPhone,
-          session.customerEmail,
-          session.customerName,
-          session.delivery?.city,
-          session.delivery?.state,
-        ]
-          .filter(Boolean)
-          .join(' ')
-          .toLowerCase()
-        return haystack.includes(search)
-      })
-    : dropOffItems
 
   const funnel = buildFunnelSummary(counts)
 
@@ -193,7 +183,7 @@ router.get('/funnel', dashboardAuth, async (req, res) => {
         ? Math.round((counts.completed / counts.started) * 100)
         : 0,
     },
-    dropOffs: filteredDropOffs.map(serializeDropOffLead),
+    dropOffs: dropOffItems.map(serializeDropOffLead),
     stageLabels: {
       started: stageLabel('started'),
       phone_captured: stageLabel('phone_captured'),

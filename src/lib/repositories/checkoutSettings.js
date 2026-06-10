@@ -30,8 +30,16 @@ async function updateSettingsByMerchantId(merchantId, update) {
   return normalizeDoc(result)
 }
 
+async function deleteSettingsByMerchantId(merchantId) {
+  const result = await getDb().collection(COLLECTION).deleteOne({
+    merchantId: toObjectId(merchantId),
+  })
+  return result.deletedCount > 0
+}
+
 module.exports = {
   findSettingsByMerchantId,
   createSettings,
   updateSettingsByMerchantId,
+  deleteSettingsByMerchantId,
 }

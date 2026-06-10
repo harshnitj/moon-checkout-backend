@@ -11,12 +11,20 @@ const dashboardRoutes = require('./routes/dashboard')
 const checkoutConfigRoutes = require('./routes/checkoutConfig')
 const checkoutFunnelRoutes = require('./routes/checkoutFunnel')
 const marketingRoutes = require('./routes/marketing')
+const webhookRoutes = require('./routes/webhooks')
 
 const app = express()
 const PORT = process.env.PORT || 3000
 
 app.use(helmet())
 app.use(cors())
+
+app.use(
+  '/webhooks',
+  express.raw({ type: 'application/json' }),
+  webhookRoutes,
+)
+
 app.use(express.json())
 
 app.get('/health', (req, res) => res.json({ status: 'ok', app: 'moon-checkout-backend' }))

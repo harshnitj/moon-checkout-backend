@@ -29,7 +29,13 @@ async function upsertMerchant(shop, data) {
   return normalizeDoc(result)
 }
 
+async function deleteMerchantByShop(shop) {
+  const result = await getDb().collection(COLLECTION).deleteOne({ shop })
+  return result.deletedCount > 0
+}
+
 module.exports = {
   findMerchantByShop,
   upsertMerchant,
+  deleteMerchantByShop,
 }

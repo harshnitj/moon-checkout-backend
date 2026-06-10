@@ -1,5 +1,6 @@
 const { getDb, toObjectId, normalizeDoc } = require('../db')
 const { buildCartSnapshot } = require('../cartSnapshot')
+const { mergeDelivery } = require('../funnelSessions')
 
 const COLLECTION = 'CheckoutSession'
 
@@ -46,6 +47,24 @@ function buildFilter(where = {}) {
     filter.customerPhone = { $nin: [null, ''] }
     filter.funnelStage = { $nin: ['completed'] }
   }
+
+  const search = String(where.search || '').trim()
+  if (search) {
+    const regex = new RegExp(search.replace(/[.*+?^${}()|[\]\\]/g, '\\$&'), 'i')
+    const searchClause = {
+      $or: [
+        { sessionId: regex },
+        { customerPhone: regex },
+        { customerEmail: regex },
+        { customerName: regex },
+        { 'delivery.city': regex },
+        { 'delivery.state': regex },
+      ],
+    }
+    if (Object.keys(filter).length === 0) return searchClause
+    return { $and: [filter, searchClause] }
+  }
+
   return filter
 }
 
@@ -55,9 +74,43 @@ function normalizeStage(stage) {
 
 function shouldUpgradeStage(currentStage, nextStage) {
   if (nextStage === 'completed') return true
-  if (nextStage === 'abandoned') return currentStage !== 'completed'
-  if (currentStage === 'completed' || currentStage === 'abandoned') return false
+  if (nextStage === 'abandoned') return false
+  if (currentStage === 'completed') return false
   return (STAGE_RANK[nextStage] ?? 0) > (STAGE_RANK[currentStage] ?? 0)
+}
+
+function hasAddressData(delivery = {}) {
+  return !!(
+    delivery.pincode
+    || delivery.city
+    || delivery.street
+    || delivery.houseNumber
+    || (delivery.city && delivery.state)
+  )
+}
+
+function resolvePeakStage(session = {}) {
+  const storedStage = normalizeStage(session.funnelStage)
+
+  if (storedStage !== 'abandoned') return storedStage
+
+  const variant = session.checkoutVariant || 'single-page'
+  const lastStep = session.lastStep || 1
+  const delivery = session.delivery || {}
+
+  if (variant === 'three-step') {
+    if (lastStep >= 3 || session.paymentReached) return 'payment_viewed'
+    if (lastStep >= 2) return hasAddressData(delivery) ? 'address_completed' : 'contact_completed'
+    if (session.customerPhone && (session.customerEmail || session.customerName)) return 'contact_completed'
+    if (session.customerPhone) return 'phone_captured'
+    return 'started'
+  }
+
+  if (session.paymentReached) return 'payment_viewed'
+  if (hasAddressData(delivery)) return 'address_completed'
+  if (session.customerPhone && (session.customerEmail || session.customerName)) return 'contact_completed'
+  if (session.customerPhone) return 'phone_captured'
+  return 'started'
 }
 
 async function upsertSession(data) {
@@ -67,9 +120,12 @@ async function upsertSession(data) {
   if (!sessionId) throw new Error('sessionId is required')
 
   const existing = await getDb().collection(COLLECTION).findOne({ merchantId, sessionId })
-  const currentStage = normalizeStage(existing?.funnelStage)
+  const currentStage = resolvePeakStage(existing || {})
   const nextStage = normalizeStage(data.funnelStage || currentStage)
-  const funnelStage = shouldUpgradeStage(currentStage, nextStage) ? nextStage : currentStage
+  const isAbandonEvent = nextStage === 'abandoned'
+  const funnelStage = isAbandonEvent
+    ? currentStage
+    : (shouldUpgradeStage(currentStage, nextStage) ? nextStage : currentStage)
 
   const setFields = {
     shop: data.shop,
@@ -84,12 +140,18 @@ async function upsertSession(data) {
   if (data.customerEmail !== undefined) setFields.customerEmail = data.customerEmail || null
   if (data.customerName !== undefined) setFields.customerName = data.customerName || null
   if (data.paymentMethod !== undefined) setFields.paymentMethodSelected = data.paymentMethod || null
-  if (data.delivery !== undefined) setFields.delivery = data.delivery || null
+  if (data.delivery !== undefined) {
+    setFields.delivery = mergeDelivery(existing?.delivery, data.delivery)
+  }
   if (data.cartSnapshot) setFields.cartSnapshot = buildCartSnapshot(data.cartSnapshot)
   if (data.completedOrderId) setFields.completedOrderId = data.completedOrderId
   if (data.completedOrderName) setFields.completedOrderName = data.completedOrderName
-  if (funnelStage === 'abandoned') setFields.abandonedAt = now
+  if (isAbandonEvent) setFields.abandonedAt = now
   if (funnelStage === 'completed') setFields.completedAt = now
+  if (funnelStage === 'payment_viewed' || nextStage === 'payment_viewed') {
+    setFields.paymentReached = true
+  }
+  if (funnelStage === 'completed') setFields.paymentReached = true
 
   const result = await getDb().collection(COLLECTION).findOneAndUpdate(
     { merchantId, sessionId },
@@ -167,16 +229,16 @@ async function aggregateFunnelCounts(merchantId, since = null) {
   }
 
   for (const doc of docs) {
-    const stage = normalizeStage(doc.funnelStage)
-    const rank = STAGE_RANK[stage] ?? 0
+    const peakStage = resolvePeakStage(doc)
+    const rank = STAGE_RANK[peakStage] ?? 0
 
     counts.started += 1
     if (rank >= STAGE_RANK.phone_captured || doc.customerPhone) counts.phone_captured += 1
     if (rank >= STAGE_RANK.contact_completed) counts.contact_completed += 1
     if (rank >= STAGE_RANK.address_completed) counts.address_completed += 1
     if (rank >= STAGE_RANK.payment_viewed) counts.payment_viewed += 1
-    if (stage === 'completed') counts.completed += 1
-    if (stage === 'abandoned') counts.abandoned += 1
+    if (peakStage === 'completed') counts.completed += 1
+    if (doc.abandonedAt || doc.funnelStage === 'abandoned') counts.abandoned += 1
   }
 
   return counts
@@ -185,6 +247,7 @@ async function aggregateFunnelCounts(merchantId, since = null) {
 module.exports = {
   FUNNEL_STAGES,
   STAGE_RANK,
+  resolvePeakStage,
   upsertSession,
   markSessionCompleted,
   countSessions,
