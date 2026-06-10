@@ -11,10 +11,15 @@ router.get('/', (req, res) => {
   if (!shop || !shop.includes('.myshopify.com')) {
     return res.status(400).send('Missing or invalid shop parameter')
   }
-  const nonce = generateNonce()
-  nonceStore.set(shop, nonce)
-  const authUrl = buildAuthUrl(shop, nonce)
-  return res.redirect(authUrl)
+  try {
+    const nonce = generateNonce()
+    nonceStore.set(shop, nonce)
+    const authUrl = buildAuthUrl(shop, nonce)
+    return res.redirect(authUrl)
+  } catch (err) {
+    console.error('OAuth start error:', err)
+    return res.status(500).send(err?.message || 'OAuth configuration error.')
+  }
 })
 
 router.get('/callback', async (req, res) => {

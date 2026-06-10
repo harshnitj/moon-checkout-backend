@@ -2,7 +2,25 @@ const crypto = require('crypto')
 const { SHOPIFY_API_KEY, SHOPIFY_API_SECRET, SHOPIFY_SCOPES, APP_URL } = process.env
 
 function getAppUrl() {
-  return String(APP_URL || '').replace(/\/+$/, '')
+  const configured = String(APP_URL || '').trim()
+  const vercelHost = String(
+    process.env.VERCEL_PROJECT_PRODUCTION_URL
+    || process.env.VERCEL_URL
+    || '',
+  ).trim().replace(/^https?:\/\//i, '').replace(/\/+$/, '')
+
+  let url = configured || (vercelHost ? `https://${vercelHost}` : '')
+  url = url.replace(/\/+$/, '')
+
+  if (!url) {
+    throw new Error(
+      'APP_URL is not configured. Set APP_URL=https://moon-checkout-backend.vercel.app in Vercel environment variables.',
+    )
+  }
+  if (!/^https?:\/\//i.test(url)) {
+    throw new Error('APP_URL must start with http:// or https://')
+  }
+  return url
 }
 
 function buildAuthUrl(shop, nonce) {
