@@ -4,6 +4,9 @@ const { createTransaction } = require('../lib/repositories/checkoutTransactions'
 const { getValidAccessToken } = require('../lib/shopifyTokens')
 const { getSettingsForShop, isPaymentMethodAllowed } = require('../lib/checkoutSettings')
 const { getCodChargeForCart } = require('../lib/codCharges')
+const { trackServerMarketingEvent } = require('../lib/marketingEvents')
+const { markSessionCompleted } = require('../lib/repositories/checkoutSessions')
+const { buildCartSnapshot } = require('../lib/cartSnapshot')
 
 const MOON_ORDER_TAG = 'moon-checkout, moon-media'
 
@@ -104,7 +107,19 @@ function buildOrderCustomer(existingCustomer, first_name, last_name, customerEma
 }
 
 router.post('/create', async (req, res) => {
-  const { shop, lineItems, customer, shippingAddress, paymentMethod, orderTotalPaise, cartSubtotalPaise } = req.body
+  const {
+    shop,
+    lineItems,
+    customer,
+    shippingAddress,
+    paymentMethod,
+    orderTotalPaise,
+    cartSubtotalPaise,
+    marketing,
+    funnelSessionId,
+    cartSnapshot,
+    cartData,
+  } = req.body
 
   if (!shop || !lineItems || !customer || !shippingAddress) {
     return res.status(400).json({ error: 'Missing required fields' })
@@ -118,7 +133,12 @@ router.post('/create', async (req, res) => {
 
     const { merchant, settings } = storeConfig
     const subtotalForRules = Number(cartSubtotalPaise) || Number(orderTotalPaise) || 0
-    const paymentCheck = isPaymentMethodAllowed(settings, paymentMethod, subtotalForRules)
+    const paymentCheck = isPaymentMethodAllowed(settings, paymentMethod, subtotalForRules, {
+      pincode: shippingAddress.zip,
+      phone: customer.phone,
+      state: shippingAddress.province,
+      lineItems,
+    })
     if (!paymentCheck.allowed) {
       return res.status(400).json({ error: paymentCheck.reason })
     }
@@ -188,6 +208,8 @@ router.post('/create', async (req, res) => {
 
     const data = await response.json()
 
+    const orderCartSnapshot = buildCartSnapshot(cartSnapshot || cartData)
+
     try {
       await createTransaction({
         merchantId: merchant.id,
@@ -199,9 +221,44 @@ router.post('/create', async (req, res) => {
         paymentMethod: paymentMethod || 'cod',
         amountPaise: Number(orderTotalPaise) || Math.round(Number(data.order.total_price || 0) * 100),
         status: paymentMethod === 'cod' || paymentMethod === 'advance' ? 'pending' : 'paid',
+        cartSnapshot: orderCartSnapshot,
       })
     } catch (txErr) {
       console.error('Transaction log error:', txErr)
+    }
+
+    try {
+      await markSessionCompleted({
+        merchantId: merchant.id,
+        sessionId: funnelSessionId,
+        customerPhone: formattedPhone,
+        completedOrderId: String(data.order.id),
+        completedOrderName: data.order.name,
+      })
+    } catch (sessionErr) {
+      console.error('Funnel session complete error:', sessionErr)
+    }
+
+    if (marketing?.eventId) {
+      void trackServerMarketingEvent(shop, {
+        eventName: 'Purchase',
+        eventId: marketing.eventId,
+        payload: {
+          ...(marketing.payload || {}),
+          value: (Number(orderTotalPaise) || 0) / 100,
+          currency: marketing.payload?.currency || 'INR',
+          order_id: data.order.name,
+          transaction_id: data.order.name,
+        },
+        userData: {
+          email: customerEmail,
+          phone: formattedPhone,
+          ...(marketing.userData || {}),
+        },
+        req,
+      }).catch((trackErr) => {
+        console.error('Purchase marketing track error:', trackErr)
+      })
     }
 
     return res.json({ success: true, orderId: data.order.id, orderName: data.order.name })

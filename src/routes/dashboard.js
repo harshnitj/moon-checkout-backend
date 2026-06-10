@@ -13,6 +13,18 @@ const {
   serializeSettings,
   pickSettingsUpdate,
 } = require('../lib/checkoutSettings')
+const { resolveCollectionProductIds } = require('../lib/rtoRules')
+const {
+  buildFunnelSummary,
+  getRangeStart,
+  serializeDropOffLead,
+  stageLabel,
+} = require('../lib/funnelSessions')
+const {
+  aggregateFunnelCounts,
+  countSessions,
+  findSessions,
+} = require('../lib/repositories/checkoutSessions')
 
 const router = express.Router()
 
@@ -52,7 +64,7 @@ router.get('/me', dashboardAuth, async (req, res) => {
   return res.json({
     shop: req.shop,
     installedAt: req.merchant.installedAt,
-    settings: serializeSettings(settings),
+    settings: serializeSettings(settings, { includeDashboardFields: true }),
   })
 })
 
@@ -87,13 +99,14 @@ router.get('/overview', dashboardAuth, async (req, res) => {
     totalRevenue,
     todayRevenue,
     paymentBreakdown,
-    recentTransactions: transactions.slice(0, 5).map(serializeTransaction),
+    recentOrders: transactions.slice(0, 5).map(serializeOrder),
+    recentTransactions: transactions.slice(0, 5).map(serializeOrder),
   })
 })
 
 router.get('/settings', dashboardAuth, async (req, res) => {
   const settings = await ensureCheckoutSettings(req.merchant.id)
-  return res.json({ settings: serializeSettings(settings) })
+  return res.json({ settings: serializeSettings(settings, { includeDashboardFields: true }) })
 })
 
 router.put('/settings', dashboardAuth, async (req, res) => {
@@ -104,19 +117,102 @@ router.put('/settings', dashboardAuth, async (req, res) => {
     }
 
     await ensureCheckoutSettings(req.merchant.id)
+    const existing = await ensureCheckoutSettings(req.merchant.id)
+    const mergedForCollections = { ...existing, ...update }
+    if (
+      update.rtoBlockedCollectionIds !== undefined
+      || update.rtoRules !== undefined
+      || update.rtoMitigationCollectionEnabled !== undefined
+    ) {
+      update.rtoCollectionProductIds = await resolveCollectionProductIds(req.shop, mergedForCollections)
+    }
     const settings = await updateSettingsByMerchantId(req.merchant.id, update)
 
-    return res.json({ settings: serializeSettings(settings) })
+    return res.json({ settings: serializeSettings(settings, { includeDashboardFields: true }) })
   } catch (err) {
     console.error('Settings save error:', err)
-    return res.status(500).json({
-      error: 'Failed to save settings.',
+    const status = /invalid|required when/i.test(err.message) ? 400 : 500
+    return res.status(status).json({
+      error: status === 400 ? err.message : 'Failed to save settings.',
       details: err.message,
     })
   }
 })
 
-router.get('/transactions', dashboardAuth, async (req, res) => {
+router.get('/funnel', dashboardAuth, async (req, res) => {
+  const range = String(req.query.range || '7d')
+  const page = Math.max(parseInt(req.query.page, 10) || 1, 1)
+  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100)
+  const skip = (page - 1) * limit
+  const search = String(req.query.search || '').trim().toLowerCase()
+  const since = getRangeStart(range)
+  const merchantId = req.merchant.id
+
+  const where = { merchantId }
+  if (since) where.createdAt = { gte: since }
+
+  const [counts, dropOffTotal, dropOffItems] = await Promise.all([
+    aggregateFunnelCounts(merchantId, since),
+    countSessions({ ...where, dropOff: true }),
+    findSessions({
+      where: { ...where, dropOff: true },
+      orderBy: { lastActivityAt: 'desc' },
+      skip,
+      take: limit,
+    }),
+  ])
+
+  const filteredDropOffs = search
+    ? dropOffItems.filter((session) => {
+        const haystack = [
+          session.customerPhone,
+          session.customerEmail,
+          session.customerName,
+          session.delivery?.city,
+          session.delivery?.state,
+        ]
+          .filter(Boolean)
+          .join(' ')
+          .toLowerCase()
+        return haystack.includes(search)
+      })
+    : dropOffItems
+
+  const funnel = buildFunnelSummary(counts)
+
+  return res.json({
+    range,
+    funnel,
+    summary: {
+      sessionsStarted: counts.started,
+      phoneCaptured: counts.phone_captured,
+      ordersCompleted: counts.completed,
+      abandoned: counts.abandoned,
+      retargetingReady: Math.max(counts.phone_captured - counts.completed, 0),
+      overallConversion: counts.started > 0
+        ? Math.round((counts.completed / counts.started) * 100)
+        : 0,
+    },
+    dropOffs: filteredDropOffs.map(serializeDropOffLead),
+    stageLabels: {
+      started: stageLabel('started'),
+      phone_captured: stageLabel('phone_captured'),
+      contact_completed: stageLabel('contact_completed'),
+      address_completed: stageLabel('address_completed'),
+      payment_viewed: stageLabel('payment_viewed'),
+      abandoned: stageLabel('abandoned'),
+      completed: stageLabel('completed'),
+    },
+    pagination: {
+      page,
+      limit,
+      total: dropOffTotal,
+      totalPages: Math.ceil(dropOffTotal / limit),
+    },
+  })
+})
+
+async function listOrders(req, res) {
   const page = Math.max(parseInt(req.query.page, 10) || 1, 1)
   const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100)
   const skip = (page - 1) * limit
@@ -152,7 +248,8 @@ router.get('/transactions', dashboardAuth, async (req, res) => {
     : items
 
   return res.json({
-    transactions: filtered.map(serializeTransaction),
+    orders: filtered.map(serializeOrder),
+    transactions: filtered.map(serializeOrder),
     pagination: {
       page,
       limit,
@@ -160,9 +257,13 @@ router.get('/transactions', dashboardAuth, async (req, res) => {
       totalPages: Math.ceil(total / limit),
     },
   })
-})
+}
 
-function serializeTransaction(tx) {
+router.get('/orders', dashboardAuth, listOrders)
+router.get('/transactions', dashboardAuth, listOrders)
+
+function serializeOrder(tx) {
+  const { serializeCartSnapshot } = require('../lib/cartSnapshot')
   return {
     id: tx.id,
     shopifyOrderId: tx.shopifyOrderId,
@@ -173,6 +274,7 @@ function serializeTransaction(tx) {
     paymentMethod: tx.paymentMethod,
     amountPaise: tx.amountPaise,
     status: tx.status,
+    cartSnapshot: serializeCartSnapshot(tx.cartSnapshot),
     createdAt: tx.createdAt,
   }
 }

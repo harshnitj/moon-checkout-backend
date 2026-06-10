@@ -4,6 +4,7 @@ const {
   serializeSettings,
   isPaymentMethodAllowed,
 } = require('../lib/checkoutSettings')
+const { fetchShopBranding } = require('../lib/shopBranding')
 
 const router = express.Router()
 
@@ -26,15 +27,27 @@ router.get('/', async (req, res) => {
     return res.status(404).json({ error: 'Store not configured. App may not be installed.' })
   }
 
+  const branding = await fetchShopBranding(shop)
+
   return res.json({
     shop,
     settings: serializeSettings(result.settings),
+    shopName: branding.shopName,
+    shopLogoUrl: branding.shopLogoUrl,
   })
 })
 
 router.post('/validate-payment', async (req, res) => {
   const shop = normalizeShop(req.body.shop)
-  const { paymentMethod, cartTotalPaise } = req.body
+  const {
+    paymentMethod,
+    cartTotalPaise,
+    pincode,
+    phone,
+    state,
+    productIds,
+    lineItems,
+  } = req.body
 
   if (!shop || !paymentMethod) {
     return res.status(400).json({ error: 'Missing shop or payment method.' })
@@ -48,7 +61,14 @@ router.post('/validate-payment', async (req, res) => {
   const validation = isPaymentMethodAllowed(
     result.settings,
     paymentMethod,
-    Number(cartTotalPaise) || 0
+    Number(cartTotalPaise) || 0,
+    {
+      pincode,
+      phone,
+      state,
+      productIds,
+      lineItems,
+    }
   )
 
   return res.json(validation)

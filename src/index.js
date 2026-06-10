@@ -9,6 +9,8 @@ const orderRoutes = require('./routes/orders')
 const paymentRoutes = require('./routes/payments')
 const dashboardRoutes = require('./routes/dashboard')
 const checkoutConfigRoutes = require('./routes/checkoutConfig')
+const checkoutFunnelRoutes = require('./routes/checkoutFunnel')
+const marketingRoutes = require('./routes/marketing')
 
 const app = express()
 const PORT = process.env.PORT || 3000
@@ -24,6 +26,8 @@ app.use('/api/orders', orderRoutes)
 app.use('/api/payments', paymentRoutes)
 app.use('/api/dashboard', dashboardRoutes)
 app.use('/api/checkout/config', checkoutConfigRoutes)
+app.use('/api/checkout/funnel', checkoutFunnelRoutes)
+app.use('/api/marketing', marketingRoutes)
 
 connectDb()
   .then(() => {

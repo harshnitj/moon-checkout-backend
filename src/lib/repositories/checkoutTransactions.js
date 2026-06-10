@@ -1,4 +1,5 @@
 const { getDb, toObjectId, normalizeDoc } = require('../db')
+const { buildCartSnapshot, serializeCartSnapshot } = require('../cartSnapshot')
 
 const COLLECTION = 'CheckoutTransaction'
 
@@ -22,6 +23,7 @@ async function createTransaction(data) {
     paymentMethod: data.paymentMethod,
     amountPaise: data.amountPaise ?? 0,
     status: data.status ?? 'pending',
+    cartSnapshot: data.cartSnapshot ? buildCartSnapshot(data.cartSnapshot) : null,
     createdAt: now,
   }
   const result = await getDb().collection(COLLECTION).insertOne(doc)
@@ -41,8 +43,17 @@ async function findTransactions({ where = {}, orderBy, take, skip } = {}) {
   return docs.map(normalizeDoc)
 }
 
+function serializeTransactionDoc(tx) {
+  if (!tx) return null
+  return {
+    ...tx,
+    cartSnapshot: serializeCartSnapshot(tx.cartSnapshot),
+  }
+}
+
 module.exports = {
   createTransaction,
   countTransactions,
   findTransactions,
+  serializeTransactionDoc,
 }

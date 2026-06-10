@@ -4,6 +4,26 @@ const {
   createSettings,
 } = require('./repositories/checkoutSettings')
 const { normalizeCodChargeRules, serializeCodChargeRules } = require('./codCharges')
+const { DEFAULT_THEME_COLORS, pickThemeColorUpdates, serializeThemeColors } = require('./themeColors')
+const {
+  isRazorpayConfigured,
+  pickRazorpayUpdates,
+  serializeRazorpaySettings,
+  getMerchantRazorpayCredentials,
+  getEnvRazorpayCredentials,
+} = require('./razorpayCredentials')
+const {
+  DEFAULT_MARKETING_SETTINGS,
+  pickMarketingUpdates,
+  serializeMarketingSettings,
+} = require('./marketingSettings')
+const {
+  DEFAULT_RTO_SETTINGS,
+  pickRtoUpdates,
+  serializeRtoSettings,
+  buildRtoContext,
+  getRtoPaymentBlockReason,
+} = require('./rtoRules')
 
 const CHECKOUT_VARIANTS = ['single-page', 'three-step']
 
@@ -45,6 +65,10 @@ const DEFAULT_SETTINGS = {
   landmarkRequired: false,
   landmarkLabel: 'Nearest Landmark',
   landmarkMaxLength: 100,
+  razorpayKeyId: null,
+  ...DEFAULT_THEME_COLORS,
+  ...DEFAULT_MARKETING_SETTINGS,
+  ...DEFAULT_RTO_SETTINGS,
 }
 
 const SETTINGS_FIELDS = Object.keys(DEFAULT_SETTINGS)
@@ -64,7 +88,14 @@ async function getSettingsForShop(shop) {
   return { merchant, settings }
 }
 
-function serializeSettings(settings) {
+async function getRazorpayCredentialsForShop(shop) {
+  const result = await getSettingsForShop(shop)
+  if (!result) return null
+
+  return getMerchantRazorpayCredentials(result.settings) || getEnvRazorpayCredentials()
+}
+
+function serializeSettings(settings, options = {}) {
   return {
     checkoutEnabled: settings.checkoutEnabled,
     checkoutVariant: CHECKOUT_VARIANTS.includes(settings.checkoutVariant)
@@ -105,6 +136,10 @@ function serializeSettings(settings) {
     landmarkRequired: settings.landmarkRequired,
     landmarkLabel: settings.landmarkLabel,
     landmarkMaxLength: settings.landmarkMaxLength,
+    ...serializeThemeColors(settings),
+    ...serializeRazorpaySettings(settings, options),
+    ...serializeMarketingSettings(settings, options),
+    ...serializeRtoSettings(settings),
     updatedAt: settings.updatedAt,
   }
 }
@@ -112,7 +147,7 @@ function serializeSettings(settings) {
 function pickSettingsUpdate(body) {
   const update = {}
   for (const field of SETTINGS_FIELDS) {
-    if (field === 'codChargeRules') continue
+    if (field === 'codChargeRules' || field === 'rtoRules' || field === 'rtoCollectionProductIds') continue
     if (body[field] === undefined) continue
     if (field === 'checkoutVariant') {
       update[field] = CHECKOUT_VARIANTS.includes(body[field]) ? body[field] : 'single-page'
@@ -123,12 +158,22 @@ function pickSettingsUpdate(body) {
   if (body.codChargeRules !== undefined) {
     update.codChargeRules = normalizeCodChargeRules(body.codChargeRules)
   }
+  Object.assign(update, pickThemeColorUpdates(body))
+  Object.assign(update, pickRazorpayUpdates(body))
+  Object.assign(update, pickMarketingUpdates(body))
+  Object.assign(update, pickRtoUpdates(body))
   return update
 }
 
-function isPaymentMethodAllowed(settings, paymentMethod, cartTotalPaise = 0) {
+function isPaymentMethodAllowed(settings, paymentMethod, cartTotalPaise = 0, rtoContext = {}) {
   if (!settings.checkoutEnabled) {
     return { allowed: false, reason: 'Checkout is currently disabled for this store.' }
+  }
+
+  const context = buildRtoContext({ ...rtoContext, cartTotalPaise })
+  const rtoReason = getRtoPaymentBlockReason(settings, paymentMethod, context)
+  if (rtoReason) {
+    return { allowed: false, reason: rtoReason }
   }
 
   if (paymentMethod === 'cod') {
@@ -149,6 +194,10 @@ function isPaymentMethodAllowed(settings, paymentMethod, cartTotalPaise = 0) {
     return { allowed: false, reason: 'Partial COD is not available for this order.' }
   }
 
+  if ((paymentMethod === 'online' || paymentMethod === 'advance') && !isRazorpayConfigured(settings)) {
+    return { allowed: false, reason: 'Online payment is not configured for this store.' }
+  }
+
   return { allowed: true }
 }
 
@@ -157,7 +206,10 @@ module.exports = {
   SETTINGS_FIELDS,
   ensureCheckoutSettings,
   getSettingsForShop,
+  getRazorpayCredentialsForShop,
   serializeSettings,
   pickSettingsUpdate,
   isPaymentMethodAllowed,
+  isRazorpayConfigured,
+  buildRtoContext,
 }

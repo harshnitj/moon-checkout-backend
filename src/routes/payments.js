@@ -1,8 +1,7 @@
 const express = require('express')
 const router = express.Router()
-const Razorpay = require('razorpay')
-const crypto = require('crypto')
-const { findMerchantByShop } = require('../lib/repositories/merchants')
+const { getRazorpayCredentialsForShop } = require('../lib/checkoutSettings')
+const { createRazorpayClient, verifyRazorpaySignature } = require('../lib/razorpayCredentials')
 
 // POST /api/payments/razorpay/create-order
 router.post('/razorpay/create-order', async (req, res) => {
@@ -13,32 +12,26 @@ router.post('/razorpay/create-order', async (req, res) => {
   }
 
   try {
-    const keyId = process.env.RAZORPAY_KEY_ID?.trim()
-    const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim()
-    if (!keyId || !keySecret) {
-      console.error('Razorpay order error: RAZORPAY_KEY_ID or RAZORPAY_KEY_SECRET not set')
+    const credentials = await getRazorpayCredentialsForShop(shop)
+    if (!credentials) {
       return res.status(503).json({
-        error: 'Razorpay is not configured on the server. Add RAZORPAY_KEY_ID and RAZORPAY_KEY_SECRET to your backend environment.',
+        error: 'Razorpay is not configured for this store. Add Razorpay credentials in the merchant dashboard.',
       })
     }
 
-    const merchant = await findMerchantByShop(shop)
-    if (!merchant) return res.status(404).json({ error: 'Merchant not found' })
-
-    // Each merchant should have their own Razorpay keys stored in DB
-    // For now we use env vars — in production store per-merchant keys
-    const razorpay = new Razorpay({
-      key_id: keyId,
-      key_secret: keySecret,
-    })
-
+    const razorpay = createRazorpayClient(credentials)
     const order = await razorpay.orders.create({
       amount: amountPaise,
       currency: 'INR',
       receipt: `mc_${Date.now()}`,
     })
 
-    return res.json({ id: order.id, amount: order.amount, currency: order.currency })
+    return res.json({
+      id: order.id,
+      amount: order.amount,
+      currency: order.currency,
+      keyId: credentials.keyId,
+    })
   } catch (err) {
     const details = err?.error?.description || err?.message
     console.error('Razorpay order error:', details || err)
@@ -51,25 +44,36 @@ router.post('/razorpay/create-order', async (req, res) => {
 
 // POST /api/payments/razorpay/verify
 router.post('/razorpay/verify', async (req, res) => {
-  const { razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body
-  const keySecret = process.env.RAZORPAY_KEY_SECRET?.trim()
-  if (!keySecret) {
-    return res.status(503).json({
-      error: 'Razorpay is not configured on the server. Add RAZORPAY_KEY_SECRET to your backend environment.',
+  const { shop, razorpayOrderId, razorpayPaymentId, razorpaySignature } = req.body
+
+  if (!shop || !razorpayOrderId || !razorpayPaymentId || !razorpaySignature) {
+    return res.status(400).json({ error: 'Missing shop or payment verification fields.' })
+  }
+
+  try {
+    const credentials = await getRazorpayCredentialsForShop(shop)
+    if (!credentials) {
+      return res.status(503).json({
+        error: 'Razorpay is not configured for this store. Add Razorpay credentials in the merchant dashboard.',
+      })
+    }
+
+    const verified = verifyRazorpaySignature({
+      keySecret: credentials.keySecret,
+      razorpayOrderId,
+      razorpayPaymentId,
+      razorpaySignature,
     })
+
+    if (!verified) {
+      return res.status(400).json({ error: 'Payment verification failed' })
+    }
+
+    return res.json({ verified: true })
+  } catch (err) {
+    console.error('Razorpay verify error:', err)
+    return res.status(500).json({ error: 'Failed to verify Razorpay payment.' })
   }
-
-  const body = razorpayOrderId + '|' + razorpayPaymentId
-  const expectedSignature = crypto
-    .createHmac('sha256', keySecret)
-    .update(body)
-    .digest('hex')
-
-  if (expectedSignature !== razorpaySignature) {
-    return res.status(400).json({ error: 'Payment verification failed' })
-  }
-
-  return res.json({ verified: true })
 })
 
 module.exports = router
