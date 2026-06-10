@@ -29,6 +29,21 @@ async function upsertMerchant(shop, data) {
   return normalizeDoc(result)
 }
 
+async function updateMerchantProfile(shop, profile) {
+  const now = new Date()
+  const result = await getDb().collection(COLLECTION).findOneAndUpdate(
+    { shop },
+    {
+      $set: {
+        ...profile,
+        updatedAt: now,
+      },
+    },
+    { returnDocument: 'after' },
+  )
+  return normalizeDoc(result)
+}
+
 async function deleteMerchantByShop(shop) {
   const result = await getDb().collection(COLLECTION).deleteOne({ shop })
   return result.deletedCount > 0
@@ -37,5 +52,6 @@ async function deleteMerchantByShop(shop) {
 module.exports = {
   findMerchantByShop,
   upsertMerchant,
+  updateMerchantProfile,
   deleteMerchantByShop,
 }

@@ -6,6 +6,8 @@ const {
   findTransactions,
 } = require('../lib/repositories/checkoutTransactions')
 const dashboardAuth = require('../middleware/dashboardAuth')
+const { serializeMerchantProfile } = require('../lib/merchantProfile')
+const { refreshMerchantShopProfile } = require('../lib/shopBranding')
 const { createSessionToken } = require('../lib/session')
 const {
   ensureCheckoutSettings,
@@ -56,14 +58,27 @@ router.post('/login', async (req, res) => {
     token,
     shop,
     installedAt: merchant.installedAt,
+    merchant: serializeMerchantProfile(merchant),
   })
 })
 
 router.get('/me', dashboardAuth, async (req, res) => {
-  const settings = await ensureCheckoutSettings(req.merchant.id)
+  let merchant = req.merchant
+  const settings = await ensureCheckoutSettings(merchant.id)
+
+  if (!merchant.shopName && !merchant.shopLogoUrl) {
+    try {
+      await refreshMerchantShopProfile(req.shop)
+      merchant = await findMerchantByShop(req.shop)
+    } catch (err) {
+      console.error(`Failed to refresh merchant profile for ${req.shop}:`, err)
+    }
+  }
+
   return res.json({
     shop: req.shop,
-    installedAt: req.merchant.installedAt,
+    installedAt: merchant.installedAt,
+    merchant: serializeMerchantProfile(merchant),
     settings: serializeSettings(settings, { includeDashboardFields: true }),
   })
 })

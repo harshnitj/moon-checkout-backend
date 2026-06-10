@@ -4,6 +4,7 @@ const cors = require('cors')
 const helmet = require('helmet')
 const { connectDb } = require('./lib/db')
 
+const appEntryRoutes = require('./routes/appEntry')
 const authRoutes = require('./routes/auth')
 const orderRoutes = require('./routes/orders')
 const paymentRoutes = require('./routes/payments')
@@ -29,6 +30,7 @@ app.use(express.json())
 
 app.get('/health', (req, res) => res.json({ status: 'ok', app: 'moon-checkout-backend' }))
 
+app.use('/', appEntryRoutes)
 app.use('/auth', authRoutes)
 app.use('/api/orders', orderRoutes)
 app.use('/api/payments', paymentRoutes)

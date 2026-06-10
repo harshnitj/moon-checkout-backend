@@ -4,7 +4,7 @@ const {
   serializeSettings,
   isPaymentMethodAllowed,
 } = require('../lib/checkoutSettings')
-const { fetchShopBranding } = require('../lib/shopBranding')
+const { fetchShopBranding, getMerchantBranding } = require('../lib/shopBranding')
 
 const router = express.Router()
 
@@ -27,7 +27,10 @@ router.get('/', async (req, res) => {
     return res.status(404).json({ error: 'Store not configured. App may not be installed.' })
   }
 
-  const branding = await fetchShopBranding(shop)
+  let branding = getMerchantBranding(result.merchant)
+  if (!branding.shopName && !branding.shopLogoUrl) {
+    branding = await fetchShopBranding(shop)
+  }
 
   return res.json({
     shop,

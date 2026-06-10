@@ -1,6 +1,7 @@
 const { findMerchantByShop, upsertMerchant } = require('./repositories/merchants')
 const { encryptToken, decryptToken } = require('./crypto')
 const { ensureCheckoutSettings } = require('./checkoutSettings')
+const { persistMerchantShopProfile } = require('./shopBranding')
 const {
   exchangeCodeForToken,
   refreshAccessToken,
@@ -31,6 +32,13 @@ async function saveMerchantTokens(shop, tokenData) {
   })
 
   await ensureCheckoutSettings(merchant.id)
+
+  try {
+    await persistMerchantShopProfile(shop, tokenData.access_token)
+    console.log(`✅ Saved merchant profile for ${shop}`)
+  } catch (err) {
+    console.error(`Failed to save merchant profile for ${shop}:`, err)
+  }
 }
 
 function isExpired(expiresAt) {
