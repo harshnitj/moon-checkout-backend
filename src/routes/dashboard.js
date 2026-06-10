@@ -140,66 +140,71 @@ router.put('/settings', dashboardAuth, async (req, res) => {
 })
 
 router.get('/funnel', dashboardAuth, async (req, res) => {
-  const range = String(req.query.range || '7d')
-  const page = Math.max(parseInt(req.query.page, 10) || 1, 1)
-  const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100)
-  const skip = (page - 1) * limit
-  const search = String(req.query.search || '').trim().toLowerCase()
-  const since = getRangeStart(range)
-  const merchantId = req.merchant.id
+  try {
+    const range = String(req.query.range || '7d')
+    const page = Math.max(parseInt(req.query.page, 10) || 1, 1)
+    const limit = Math.min(Math.max(parseInt(req.query.limit, 10) || 20, 1), 100)
+    const skip = (page - 1) * limit
+    const search = String(req.query.search || '').trim().toLowerCase()
+    const since = getRangeStart(range)
+    const merchantId = req.merchant.id
 
-  const where = { merchantId }
-  if (since) where.createdAt = { gte: since }
+    const where = { merchantId }
+    if (since) where.createdAt = { gte: since }
 
-  const dropOffWhere = {
-    ...where,
-    dropOff: true,
-    ...(search ? { search } : {}),
+    const dropOffWhere = {
+      ...where,
+      dropOff: true,
+      ...(search ? { search } : {}),
+    }
+
+    const [counts, dropOffTotal, dropOffItems] = await Promise.all([
+      aggregateFunnelCounts(merchantId, since),
+      countSessions(dropOffWhere),
+      findSessions({
+        where: dropOffWhere,
+        orderBy: { lastActivityAt: 'desc' },
+        skip,
+        take: limit,
+      }),
+    ])
+
+    const funnel = buildFunnelSummary(counts)
+
+    return res.json({
+      range,
+      funnel,
+      summary: {
+        sessionsStarted: counts.started,
+        phoneCaptured: counts.phone_captured,
+        ordersCompleted: counts.completed,
+        abandoned: counts.abandoned,
+        retargetingReady: Math.max(counts.phone_captured - counts.completed, 0),
+        overallConversion: counts.started > 0
+          ? Math.round((counts.completed / counts.started) * 100)
+          : 0,
+      },
+      dropOffs: dropOffItems.map(serializeDropOffLead),
+      stageLabels: {
+        started: stageLabel('started'),
+        phone_captured: stageLabel('phone_captured'),
+        contact_completed: stageLabel('contact_completed'),
+        address_completed: stageLabel('address_completed'),
+        payment_viewed: stageLabel('payment_viewed'),
+        abandoned: stageLabel('abandoned'),
+        completed: stageLabel('completed'),
+      },
+      pagination: {
+        page,
+        limit,
+        total: dropOffTotal,
+        totalPages: Math.ceil(dropOffTotal / limit),
+      },
+    })
+  } catch (err) {
+    console.error('Funnel load error:', err)
+    return res.status(500).json({ error: 'Failed to load funnel data.' })
   }
-
-  const [counts, dropOffTotal, dropOffItems] = await Promise.all([
-    aggregateFunnelCounts(merchantId, since),
-    countSessions(dropOffWhere),
-    findSessions({
-      where: dropOffWhere,
-      orderBy: { lastActivityAt: 'desc' },
-      skip,
-      take: limit,
-    }),
-  ])
-
-  const funnel = buildFunnelSummary(counts)
-
-  return res.json({
-    range,
-    funnel,
-    summary: {
-      sessionsStarted: counts.started,
-      phoneCaptured: counts.phone_captured,
-      ordersCompleted: counts.completed,
-      abandoned: counts.abandoned,
-      retargetingReady: Math.max(counts.phone_captured - counts.completed, 0),
-      overallConversion: counts.started > 0
-        ? Math.round((counts.completed / counts.started) * 100)
-        : 0,
-    },
-    dropOffs: dropOffItems.map(serializeDropOffLead),
-    stageLabels: {
-      started: stageLabel('started'),
-      phone_captured: stageLabel('phone_captured'),
-      contact_completed: stageLabel('contact_completed'),
-      address_completed: stageLabel('address_completed'),
-      payment_viewed: stageLabel('payment_viewed'),
-      abandoned: stageLabel('abandoned'),
-      completed: stageLabel('completed'),
-    },
-    pagination: {
-      page,
-      limit,
-      total: dropOffTotal,
-      totalPages: Math.ceil(dropOffTotal / limit),
-    },
-  })
 })
 
 async function listOrders(req, res) {

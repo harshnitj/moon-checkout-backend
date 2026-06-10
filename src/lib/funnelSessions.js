@@ -1,4 +1,5 @@
-const { STAGE_RANK, resolvePeakStage } = require('./repositories/checkoutSessions')
+const { STAGE_RANK, resolvePeakStage } = require('./sessionStage')
+const { normalizeDelivery, mergeDelivery } = require('./deliveryUtils')
 
 const EVENT_TO_STAGE = {
   session_started: 'started',
@@ -16,30 +17,6 @@ function formatIndianPhone(phone) {
   if (digits.length === 12 && digits.startsWith('91')) return `+${digits}`
   if (digits.length > 10) return `+91${digits.slice(-10)}`
   return digits ? `+91${digits}` : null
-}
-
-function normalizeDelivery(delivery = {}) {
-  if (!delivery || typeof delivery !== 'object') return null
-  const normalized = {
-    name: String(delivery.name || '').trim() || null,
-    houseNumber: String(delivery.houseNumber || '').trim() || null,
-    street: String(delivery.street || delivery.address1 || '').trim() || null,
-    landmark: String(delivery.landmark || delivery.address2 || '').trim() || null,
-    pincode: String(delivery.pincode || delivery.zip || '').replace(/\D/g, '').slice(0, 6) || null,
-    city: String(delivery.city || '').trim() || null,
-    state: String(delivery.state || delivery.province || '').trim() || null,
-  }
-  return Object.values(normalized).some(Boolean) ? normalized : null
-}
-
-function mergeDelivery(existing = null, incoming = null) {
-  if (!incoming) return existing || null
-  if (!existing) return incoming
-  const merged = { ...existing }
-  Object.entries(incoming).forEach(([key, value]) => {
-    if (value) merged[key] = value
-  })
-  return Object.values(merged).some(Boolean) ? merged : null
 }
 
 function buildSessionPatch(body = {}) {
